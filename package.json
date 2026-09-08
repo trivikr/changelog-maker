@@ -32,7 +32,6 @@
     "debug": "^4.3.4",
     "ghauth": "^7.0.0",
     "ghissues": "^2.0.0",
-    "gitexec": "^2.0.1",
     "pkg-to-id": "^0.0.3",
     "remark-parse": "^11.0.0",
     "remark-preset-lint-node": "^5.0.0",
