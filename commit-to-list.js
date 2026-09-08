@@ -1,15 +1,16 @@
 import _debug from 'debug'
+import { exec as _exec } from 'node:child_process'
 import process from 'process'
 import { pipeline as _pipeline } from 'stream'
 import { promisify } from 'util'
 import commitStream from 'commit-stream'
-import gitexec from 'gitexec'
 import split2 from 'split2'
 import { isReleaseCommit } from './groups.js'
 
 const debug = _debug('changelog-maker')
 
 const pipeline = promisify(_pipeline)
+const exec = promisify(_exec)
 const gitcmd = 'git log --pretty=full --since="{{sincecmd}}" --until="{{untilcmd}}"'
 const commitdatecmd = '$(git show -s --format=%cd `{{refcmd}}`)'
 const untilcmd = ''
@@ -62,8 +63,10 @@ export async function commitToList (ghId, argv) {
   debug('%s', _gitcmd)
 
   let commitList = []
+  const { stdout, stderr } = await exec(_gitcmd, { cwd: process.cwd(), maxBuffer: Infinity })
+  process.stderr.write(stderr)
   await pipeline(
-    gitexec.exec(process.cwd(), _gitcmd),
+    [stdout],
     split2(),
     commitStream(ghId.user, ghId.repo),
     async function * (source) {
