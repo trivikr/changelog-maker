@@ -2,7 +2,9 @@
 // Run `./changelog-maker.js` by itself to set this up.
 
 import { dirname, join } from 'path'
-import { execSync } from 'child_process'
+import { execFileSync, execSync, spawnSync } from 'child_process'
+import { existsSync, mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { styleText } from 'node:util'
@@ -15,6 +17,103 @@ function exec (args) {
 
   return stdout
 }
+
+function run (args, options) {
+  return spawnSync(process.execPath, [join(__dirname, 'changelog-maker.js'), ...args], { encoding: 'utf8', ...options })
+}
+
+function withTempRepo (fn) {
+  const cwd = mkdtempSync(join(tmpdir(), 'changelog-maker-'))
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c' }
+  const git = (...args) => execFileSync('git', args, { cwd, env })
+  const commit = (message, date) => execFileSync('git', ['commit', '-q', '--allow-empty', '-m', message], {
+    cwd,
+    env: { ...env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }
+  })
+  try {
+    git('init', '-q')
+    commit('one', '2020-01-01T00:00:00Z')
+    commit('two', '2020-02-01T00:00:00Z')
+    commit('three', '2020-03-01T00:00:00Z')
+    fn({ cwd, git })
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+}
+
+function summaries (stdout) {
+  return stdout.trim().split('\n').map((line) => line.replace(/^\* \[\w+\] - /, ''))
+}
+
+for (const flag of ['--start-ref', '--end-ref']) {
+  test(`test ${flag} fails on a bad ref`, () => {
+    const { status, stdout, stderr } = run([`${flag}=not-a-real-ref`, 'nodejs', 'changelog-maker'])
+    assert.equal(status, 1)
+    assert.equal(stdout, '')
+    assert.match(stderr, /not-a-real-ref/)
+  })
+}
+
+test('test --end-ref fails on a bad ref with --all', () => {
+  const { status, stdout } = run(['--all', '--end-ref=not-a-real-ref', 'nodejs', 'changelog-maker'])
+  assert.equal(status, 1)
+  assert.equal(stdout, '')
+})
+
+test('test ref that resolves to no commits fails', () => {
+  const { status, stdout, stderr } = run(['--start-ref=HEAD..HEAD', 'nodejs', 'changelog-maker'])
+  assert.equal(status, 1)
+  assert.equal(stdout, '')
+  assert.match(stderr, /does not resolve to a commit/)
+})
+
+test('test ref is not read as a git option', () => {
+  const { status, stdout } = run(['--start-ref=--all', 'nodejs', 'changelog-maker'])
+  assert.equal(status, 1)
+  assert.equal(stdout, '')
+})
+
+test('test ref is not read as a path', () => {
+  const { status, stdout } = run(['--start-ref=README.md', 'nodejs', 'changelog-maker'])
+  assert.equal(status, 1)
+  assert.equal(stdout, '')
+})
+
+test('test ref is not interpreted by a shell', () => {
+  withTempRepo(({ cwd }) => {
+    const { status, stdout } = run(['--start-ref=HEAD;touch pwned', 'foo', 'bar'], { cwd })
+    assert.equal(status, 1)
+    assert.equal(stdout, '')
+    assert.equal(existsSync(join(cwd, 'pwned')), false)
+  })
+})
+
+test('test default start ref is HEAD without tags', () => {
+  withTempRepo(({ cwd }) => {
+    assert.deepEqual(summaries(run(['foo', 'bar'], { cwd }).stdout), ['three (a)'])
+  })
+})
+
+test('test default start ref prefers v-prefixed tags', () => {
+  withTempRepo(({ cwd, git }) => {
+    git('tag', '1.0.0', 'HEAD~2')
+    git('tag', 'v1.0.0', 'HEAD~1')
+    assert.deepEqual(summaries(run(['foo', 'bar'], { cwd }).stdout), ['three (a)', 'two (a)'])
+  })
+})
+
+test('test default start ref falls back to unprefixed tags', () => {
+  withTempRepo(({ cwd, git }) => {
+    git('tag', '1.0.0', 'HEAD~1')
+    assert.deepEqual(summaries(run(['foo', 'bar'], { cwd }).stdout), ['three (a)', 'two (a)'])
+  })
+})
+
+test('test --all with --end-ref stops at the end ref', () => {
+  withTempRepo(({ cwd }) => {
+    assert.deepEqual(summaries(run(['--all', '--end-ref=HEAD~1', 'foo', 'bar'], { cwd }).stdout), ['two (a)', 'one (a)'])
+  })
+})
 
 test('test basic commit block', () => {
   assert.equal(exec('--format=markdown --start-ref=v1.3.9 --end-ref=v1.3.10'),
