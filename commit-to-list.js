@@ -1,5 +1,5 @@
 import _debug from 'debug'
-import { spawn } from 'node:child_process'
+import { execFile as _execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createInterface } from 'node:readline'
 import { Readable, pipeline as _pipeline } from 'stream'
@@ -10,18 +10,42 @@ import { isReleaseCommit } from './groups.js'
 const debug = _debug('changelog-maker')
 
 const pipeline = promisify(_pipeline)
-const gitcmd = 'git log --pretty=full --since="{{sincecmd}}" --until="{{untilcmd}}"'
-const commitdatecmd = '$(git show -s --format=%cd `{{refcmd}}`)'
-const untilcmd = ''
-const defaultRef = '--tags=v*.*.* 2> /dev/null ' +
-        '|| git rev-list --max-count=1 --tags=*.*.* 2> /dev/null ' +
-        '|| git rev-list --max-count=1 HEAD'
+const execFile = promisify(_execFile)
 
-function replace (s, m) {
-  Object.keys(m).forEach((k) => {
-    s = s.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), m[k])
-  })
-  return s
+async function git (...args) {
+  const { stdout } = await execFile('git', args)
+  return stdout.trim()
+}
+
+async function resolveRef (ref) {
+  try {
+    return await git('rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`)
+  } catch {
+    throw new Error(`unknown git ref: ${ref}`)
+  }
+}
+
+// most recent commit tagged like a version, falling back to HEAD
+async function defaultStartRef () {
+  for (const rev of ['--tags=v*.*.*', '--tags=*.*.*', 'HEAD']) {
+    const sha = await git('rev-list', '--max-count=1', rev).catch(() => '')
+    if (sha) {
+      return sha
+    }
+  }
+  throw new Error('could not determine a start ref')
+}
+
+async function startRef (argv) {
+  if (argv.a || argv.all) {
+    // the oldest root commit
+    return (await git('rev-list', '--max-parents=0', 'HEAD')).split('\n').pop()
+  }
+  return argv['start-ref'] ? resolveRef(argv['start-ref']) : defaultStartRef()
+}
+
+function commitDate (sha) {
+  return git('show', '-s', '--format=%cd', sha)
 }
 
 function organiseCommits (argv, list) {
@@ -49,20 +73,14 @@ function organiseCommits (argv, list) {
 }
 
 export async function commitToList (ghId, argv) {
-  const refcmd = argv.a || argv.all ? 'git rev-list --max-parents=0 HEAD' : 'git rev-list --max-count=1 {{ref}}'
-  const _startrefcmd = replace(refcmd, { ref: argv['start-ref'] || defaultRef })
-  const _endrefcmd = argv['end-ref'] && replace(refcmd, { ref: argv['end-ref'] })
-  const _sincecmd = replace(commitdatecmd, { refcmd: _startrefcmd })
-  const _untilcmd = argv['end-ref'] ? replace(commitdatecmd, { refcmd: _endrefcmd }) : untilcmd
-  const _gitcmd = replace(gitcmd, { sincecmd: _sincecmd, untilcmd: _untilcmd })
-  debug('%s', _startrefcmd)
-  debug('%s', _endrefcmd)
-  debug('%s', _sincecmd)
-  debug('%s', _untilcmd)
-  debug('%s', _gitcmd)
+  const args = ['log', '--pretty=full', `--since=${await commitDate(await startRef(argv))}`]
+  if (argv['end-ref']) {
+    args.push(`--until=${await commitDate(await resolveRef(argv['end-ref']))}`)
+  }
+  debug('git %o', args)
 
   let commitList = []
-  const child = spawn(_gitcmd, { shell: true, stdio: ['ignore', 'pipe', 'inherit'] })
+  const child = spawn('git', args, { stdio: ['ignore', 'pipe', 'inherit'] })
   const [[code, signal]] = await Promise.all([
     once(child, 'close'),
     pipeline(
@@ -75,7 +93,7 @@ export async function commitToList (ghId, argv) {
       })
   ])
   if (code || signal) {
-    throw new Error(`git command [${_gitcmd}] exited with ${signal ? `signal ${signal}` : `code ${code}`}`)
+    throw new Error(`git command [git ${args.join(' ')}] exited with ${signal ? `signal ${signal}` : `code ${code}`}`)
   }
   commitList = organiseCommits(argv, commitList)
   return commitList

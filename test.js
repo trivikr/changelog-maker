@@ -6,6 +6,7 @@ import { execSync } from 'child_process'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { styleText } from 'node:util'
+import { commitToList } from './commit-to-list.js'
 import { commitToOutput, formatType } from './commit-to-output.js'
 import { forEachConcurrent } from './for-each-concurrent.js'
 import { isReleaseCommit } from './groups.js'
@@ -249,5 +250,19 @@ test('test plaintext revert, without group', () => {
   assert.equal(
     commitToOutput(commit, formatType.PLAINTEXT, { user: 'nodejs', repo: 'node' }, '{ref}'),
     '  * Revert "fix thing" (A)'
+  )
+})
+
+test('test unknown start-ref', async () => {
+  await assert.rejects(
+    commitToList({ user: 'nodejs', repo: 'changelog-maker' }, { 'start-ref': 'does-not-exist' }),
+    { message: 'unknown git ref: does-not-exist' }
+  )
+})
+
+test('test unknown end-ref', async () => {
+  await assert.rejects(
+    commitToList({ user: 'nodejs', repo: 'changelog-maker' }, { 'start-ref': 'HEAD~1', 'end-ref': 'does-not-exist' }),
+    { message: 'unknown git ref: does-not-exist' }
   )
 })
